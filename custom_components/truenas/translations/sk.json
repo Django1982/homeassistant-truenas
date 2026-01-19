@@ -6,6 +6,7 @@
                 "data": {
                     "name": "Názov integrácie",
                     "host": "Hostiteľ",
+                    "username": "Používateľské meno",
                     "api_key": "API kľúč",
                     "verify_ssl": "Overte certifikát SSL"
                 }
@@ -14,6 +15,7 @@
                 "description": "Reconfigure TrueNAS integration.",
                 "data": {
                     "host": "Host",
+                    "username": "Username",
                     "api_key": "API key",
                     "verify_ssl": "Verify SSL certificate"
                 }

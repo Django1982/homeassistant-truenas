@@ -17,15 +17,16 @@ from homeassistant.const import (
     CONF_API_KEY,
     CONF_HOST,
     CONF_NAME,
+    CONF_USERNAME,
     CONF_VERIFY_SSL,
 )
 from homeassistant.core import callback
-from homeassistant.data_entry_flow import FlowResult
 
 from .const import (
     DEFAULT_DEVICE_NAME,
     DEFAULT_HOST,
     DEFAULT_SSL_VERIFY,
+    DEFAULT_USERNAME,
     DOMAIN,
 )
 from .api import TrueNASAPI
@@ -42,6 +43,10 @@ def _base_schema(truenas_config: Mapping[str, Any]) -> vol.Schema:
         vol.Required(
             CONF_HOST, default=truenas_config.get(CONF_HOST) or DEFAULT_HOST
         ): str,
+        vol.Required(
+            CONF_USERNAME,
+            default=truenas_config.get(CONF_USERNAME) or DEFAULT_USERNAME,
+        ): str,
         vol.Required(CONF_API_KEY, default=truenas_config.get(CONF_API_KEY) or ""): str,
         vol.Required(
             CONF_VERIFY_SSL,
@@ -57,6 +62,10 @@ def _reconfigure_schema(truenas_config: Mapping[str, Any]) -> vol.Schema:
     base_schema = {
         vol.Required(
             CONF_HOST, default=truenas_config.get(CONF_HOST) or DEFAULT_HOST
+        ): str,
+        vol.Required(
+            CONF_USERNAME,
+            default=truenas_config.get(CONF_USERNAME) or DEFAULT_USERNAME,
         ): str,
         vol.Required(CONF_API_KEY, default=truenas_config.get(CONF_API_KEY) or ""): str,
         vol.Required(
@@ -110,6 +119,7 @@ class TrueNASConfigFlow(ConfigFlow, domain=DOMAIN):
             api = await self.hass.async_add_executor_job(
                 TrueNASAPI,
                 truenas_config[CONF_HOST],
+                truenas_config[CONF_USERNAME],
                 truenas_config[CONF_API_KEY],
                 truenas_config[CONF_VERIFY_SSL],
             )
@@ -148,6 +158,7 @@ class TrueNASConfigFlow(ConfigFlow, domain=DOMAIN):
             api = await self.hass.async_add_executor_job(
                 TrueNASAPI,
                 truenas_config[CONF_HOST],
+                truenas_config[CONF_USERNAME],
                 truenas_config[CONF_API_KEY],
                 truenas_config[CONF_VERIFY_SSL],
             )

@@ -14,12 +14,13 @@ from homeassistant.const import (
     CONF_API_KEY,
     CONF_HOST,
     CONF_NAME,
+    CONF_USERNAME,
     CONF_VERIFY_SSL,
 )
 
 from .api import TrueNASAPI
 from .apiparser import parse_api, utc_from_timestamp
-from .const import DOMAIN
+from .const import DEFAULT_USERNAME, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,11 +62,13 @@ class TrueNASCoordinator(DataUpdateCoordinator[None]):
 
         self.api = TrueNASAPI(
             config_entry.data[CONF_HOST],
+            config_entry.data.get(CONF_USERNAME, DEFAULT_USERNAME),
             config_entry.data[CONF_API_KEY],
             config_entry.data[CONF_VERIFY_SSL],
         )
 
         self._systemstats_errored = []
+        self._disk_temp_graph = None
         self.datasets_hass_device_id = None
         self.last_updatecheck_update = datetime(1970, 1, 1)
 
@@ -270,6 +273,28 @@ class TrueNASCoordinator(DataUpdateCoordinator[None]):
     #   get_updatecheck
     # ---------------------------
     def get_updatecheck(self) -> None:
+        update_status = self.api.query("update.status")
+        if isinstance(update_status, dict):
+            status_detail = update_status.get("status", update_status)
+            if isinstance(status_detail, dict) and isinstance(
+                status_detail.get("status"), dict
+            ):
+                status_detail = status_detail["status"]
+
+            new_version = None
+            if isinstance(status_detail, dict):
+                new_version = status_detail.get("new_version")
+            if isinstance(new_version, dict):
+                version_value = new_version.get("version")
+            else:
+                version_value = None
+
+            if version_value:
+                self.ds["system_info"]["update_status"] = "AVAILABLE"
+                self.ds["system_info"]["update_version"] = version_value
+                self.ds["system_info"]["update_available"] = True
+                return
+
         self.ds["system_info"] = parse_api(
             data=self.ds["system_info"],
             source=self.api.query("update.check_available"),
@@ -306,69 +331,53 @@ class TrueNASCoordinator(DataUpdateCoordinator[None]):
     def get_systemstats(self) -> None:
         """Get system statistics."""
         report_epoch = int(datetime.now().replace(microsecond=0).timestamp())
-        tmp_graphs = [
-            {"name": "load"},
-            {"name": "cputemp"},
-            {"name": "cpu"},
-            {"name": "arcsize"},
-            {"name": "memory"},
-        ]
+        graph_names = ["load", "cputemp", "cpu", "arcsize", "memory"]
 
-        for uid, vals in self.ds["interface"].items():
-            tmp_graphs.append({"name": "interface", "identifier": uid})
+        if self.ds["interface"]:
+            graph_names.append("interface")
 
         if self._is_virtual:
-            tmp_graphs.remove({"name": "cputemp"})
+            graph_names.remove("cputemp")
 
-        for tmp in tmp_graphs:
-            if tmp["name"] in self._systemstats_errored:
-                tmp_graphs.remove(tmp)
-
-        if not tmp_graphs:
-            return
-
-        tmp_params = [
-            tmp_graphs,
-            {
-                "start": report_epoch - 30,
-                "end": report_epoch - 90,
-                "aggregate": True,
-            },
+        graph_names = [
+            graph_name
+            for graph_name in graph_names
+            if graph_name not in self._systemstats_errored
         ]
 
-        reporting_path = "reporting.netdata_get_data"
+        if not graph_names:
+            return
 
-        tmp_graph = self.api.query(
-            reporting_path,
-            params=tmp_params,
-        )
+        graph_query = {
+            "start": report_epoch - 30,
+            "end": report_epoch - 90,
+            "aggregate": True,
+        }
+        reporting_path = "reporting.netdata_graph"
+        tmp_graph = []
+        failed_graphs = []
 
-        if not isinstance(tmp_graph, list):
-            if self.api.error == 500:
-                for tmp in tmp_params["graphs"]:
-                    tmp_params2 = {
-                        [tmp],
-                        {
-                            "start": report_epoch - 30,
-                            "end": report_epoch - 90,
-                            "aggregate": "true",
-                        },
-                    }
+        for graph_name in graph_names:
+            graph_data = self.api.query(
+                reporting_path,
+                params=[graph_name, graph_query],
+            )
+            if isinstance(graph_data, list):
+                tmp_graph.extend(graph_data)
+            else:
+                failed_graphs.append(graph_name)
 
-                    tmp2 = self.api.query(
-                        reporting_path,
-                        params=tmp_params2,
-                    )
-                    if not isinstance(tmp2, list) and self.api.error == 500:
-                        self._systemstats_errored.append(tmp["name"])
+        if failed_graphs:
+            for graph_name in failed_graphs:
+                if graph_name not in self._systemstats_errored:
+                    self._systemstats_errored.append(graph_name)
+            _LOGGER.warning(
+                "TrueNAS %s failed to fetch graphs: %s",
+                self.host,
+                failed_graphs,
+            )
 
-                _LOGGER.warning(
-                    "TrueNAS %s fetching following graphs failed, check your NAS: %s",
-                    self.host,
-                    self._systemstats_errored,
-                )
-                self.get_systemstats()
-
+        if not tmp_graph:
             return
 
         for i in range(len(tmp_graph)):
@@ -528,97 +537,38 @@ class TrueNASCoordinator(DataUpdateCoordinator[None]):
                 {"name": "status", "default": "unknown"},
                 {"name": "healthy", "type": "bool", "default": False},
                 {"name": "is_decrypted", "type": "bool", "default": False},
-                {
-                    "name": "autotrim",
-                    "source": "autotrim/parsed",
-                    "type": "bool",
-                    "default": False,
-                },
-                {
-                    "name": "scan_function",
-                    "source": "scan/function",
-                    "default": "unknown",
-                },
-                {"name": "scrub_state", "source": "scan/state", "default": "unknown"},
-                {
-                    "name": "scrub_start",
-                    "source": "scan/start_time/$date",
-                    "default": 0,
-                    "convert": "utc_from_timestamp",
-                },
-                {
-                    "name": "scrub_end",
-                    "source": "scan/end_time/$date",
-                    "default": 0,
-                    "convert": "utc_from_timestamp",
-                },
-                {
-                    "name": "scrub_secs_left",
-                    "source": "scan/total_secs_left",
-                    "default": 0,
-                },
-            ],
-            ensure_vals=[
-                {"name": "available", "default": 0.0},
-                {"name": "total", "default": 0.0},
-                {"name": "usage", "default": 0.0},
-            ],
-        )
-
-        self.ds["pool"] = parse_api(
-            data=self.ds["pool"],
-            source=self.api.query("boot.get_state"),
-            key="name",
-            vals=[
-                {"name": "guid", "default": "boot-pool"},
-                {"name": "id", "default": "boot-pool"},
-                {"name": "name", "default": "unknown"},
-                {"name": "path", "default": "unknown"},
-                {"name": "status", "default": "unknown"},
-                {"name": "healthy", "type": "bool", "default": False},
-                {"name": "is_decrypted", "type": "bool", "default": False},
-                {
-                    "name": "autotrim",
-                    "source": "autotrim/parsed",
-                    "type": "bool",
-                    "default": False,
-                },
-                {"name": "root_dataset"},
-                {
-                    "name": "root_dataset_available",
-                    "source": "root_dataset/properties/available/parsed",
-                    "default": 0,
-                },
-                {
-                    "name": "root_dataset_used",
-                    "source": "root_dataset/properties/used/parsed",
-                    "default": 0,
-                },
-                {
-                    "name": "scan_function",
-                    "source": "scan/function",
-                    "default": "unknown",
-                },
-                {"name": "scrub_state", "source": "scan/state", "default": "unknown"},
-                {
-                    "name": "scrub_start",
-                    "source": "scan/start_time/$date",
-                    "default": 0,
-                    "convert": "utc_from_timestamp",
-                },
-                {
-                    "name": "scrub_end",
-                    "source": "scan/end_time/$date",
-                    "default": 0,
-                    "convert": "utc_from_timestamp",
-                },
-                {
-                    "name": "scrub_secs_left",
-                    "source": "scan/total_secs_left",
-                    "default": 0,
-                },
+                {"name": "size", "default": 0},
                 {"name": "allocated", "default": 0},
                 {"name": "free", "default": 0},
+                {
+                    "name": "autotrim",
+                    "source": "autotrim/parsed",
+                    "type": "bool",
+                    "default": False,
+                },
+                {
+                    "name": "scan_function",
+                    "source": "scan/function",
+                    "default": "unknown",
+                },
+                {"name": "scrub_state", "source": "scan/state", "default": "unknown"},
+                {
+                    "name": "scrub_start",
+                    "source": "scan/start_time/$date",
+                    "default": 0,
+                    "convert": "utc_from_timestamp",
+                },
+                {
+                    "name": "scrub_end",
+                    "source": "scan/end_time/$date",
+                    "default": 0,
+                    "convert": "utc_from_timestamp",
+                },
+                {
+                    "name": "scrub_secs_left",
+                    "source": "scan/total_secs_left",
+                    "default": 0,
+                },
             ],
             ensure_vals=[
                 {"name": "available", "default": 0.0},
@@ -642,17 +592,25 @@ class TrueNASCoordinator(DataUpdateCoordinator[None]):
             )
 
         for uid, vals in self.ds["pool"].items():
+            if vals.get("free"):
+                self.ds["pool"][uid]["available"] = vals["free"]
+
+            if vals.get("size"):
+                self.ds["pool"][uid]["total"] = vals["size"]
+            elif vals.get("allocated") or vals.get("free"):
+                self.ds["pool"][uid]["total"] = vals.get("allocated", 0) + vals.get(
+                    "free", 0
+                )
+
             if vals["path"] in tmp_dataset_available:
-                self.ds["pool"][uid]["available"] = tmp_dataset_available[vals["path"]]
+                if not self.ds["pool"][uid]["available"]:
+                    self.ds["pool"][uid]["available"] = tmp_dataset_available[
+                        vals["path"]
+                    ]
 
             if vals["path"] in tmp_dataset_total:
-                self.ds["pool"][uid]["total"] = tmp_dataset_total[vals["path"]]
-
-            if vals["name"] in ["boot-pool", "freenas-boot"]:
-                self.ds["pool"][uid]["available"] = vals["free"]
-                self.ds["pool"][uid]["total"] = vals["free"] + vals["allocated"]
-
-                self.ds["pool"][uid].pop("root_dataset")
+                if not self.ds["pool"][uid]["total"]:
+                    self.ds["pool"][uid]["total"] = tmp_dataset_total[vals["path"]]
 
             if self.ds["pool"][uid]["total"] > 0:
                 self.ds["pool"][uid]["usage"] = round(
@@ -806,17 +764,75 @@ class TrueNASCoordinator(DataUpdateCoordinator[None]):
         )
 
         # Get disk temperatures
+        netdata_temps = self._disk_temps_from_netdata()
+        if netdata_temps:
+            disk_map = {}
+            for uid, vals in self.ds["disk"].items():
+                for key in (
+                    vals.get("name"),
+                    vals.get("devname"),
+                    vals.get("identifier"),
+                ):
+                    if key:
+                        disk_map[key] = uid
+
+            for disk_name, temp in netdata_temps.items():
+                if disk_name in disk_map:
+                    self.ds["disk"][disk_map[disk_name]]["temperature"] = round(temp, 2)
+            return
+
         temps = self.api.query(
             "disk.temperatures",
             params={},
         )
 
-        if temps:
+        if isinstance(temps, dict) and "error" not in temps:
             for uid, vals in self.ds["disk"].items():
                 if vals["name"] in temps:  # looks for devname here
                     self.ds["disk"][uid]["temperature"] = temps[vals["name"]]
                     # return devname temp to uid disk
                     # I feel like this will break in the future when TrueNAS updates to a more sensible system. Currently their own long term stats are broken by the changing devnames.
+
+    def _disk_temps_from_netdata(self) -> dict[str, float] | None:
+        """Return disk temperatures from netdata graphs when available."""
+        if self._disk_temp_graph is None:
+            graphs = self.api.query("reporting.netdata_graphs")
+            graph_name = ""
+            if isinstance(graphs, list):
+                for graph in graphs:
+                    name = str(graph.get("name", ""))
+                    title = str(graph.get("title", "")).lower()
+                    vertical = str(graph.get("vertical_label", "")).lower()
+                    if "disk" in name or "disk" in title:
+                        if "temp" in name or "temp" in title or "celsius" in vertical:
+                            graph_name = name
+                            break
+            self._disk_temp_graph = graph_name
+
+        if not self._disk_temp_graph:
+            return None
+
+        report_epoch = int(datetime.now().replace(microsecond=0).timestamp())
+        graph_query = {
+            "start": report_epoch - 30,
+            "end": report_epoch - 90,
+            "aggregate": True,
+        }
+        graph_data = self.api.query(
+            "reporting.netdata_graph",
+            params=[self._disk_temp_graph, graph_query],
+        )
+        if not isinstance(graph_data, list):
+            return None
+
+        temps = {}
+        for entry in graph_data:
+            identifier = entry.get("identifier")
+            mean = entry.get("aggregations", {}).get("mean", {})
+            if identifier and isinstance(mean, dict) and mean:
+                temps[str(identifier)] = max(mean.values())
+
+        return temps or None
 
     # ---------------------------
     #   get_vm
@@ -825,17 +841,17 @@ class TrueNASCoordinator(DataUpdateCoordinator[None]):
         """Get VMs from TrueNAS."""
         self.ds["vm"] = parse_api(
             data=self.ds["vm"],
-            source=self.api.query("virt.instance.query"),
+            source=self.api.query("vm.query"),
             key="id",
             vals=[
                 {"name": "id", "default": 0},
                 {"name": "name", "default": "unknown"},
                 {"name": "type", "default": "unknown"},
-                {"name": "cpu", "default": 0},
+                {"name": "cpu", "source": "vcpus", "default": 0},
                 {"name": "memory", "default": 0},
                 {"name": "autostart", "type": "bool", "default": False},
-                {"name": "image", "source": "image/description", "default": "unknown"},
-                {"name": "status", "default": "unknown"},
+                {"name": "image", "source": "description", "default": "unknown"},
+                {"name": "status", "source": "status/state", "default": "unknown"},
             ],
             ensure_vals=[
                 {"name": "running", "type": "bool", "default": False},
@@ -843,7 +859,7 @@ class TrueNASCoordinator(DataUpdateCoordinator[None]):
         )
 
         for uid, vals in self.ds["vm"].items():
-            self.ds["vm"][uid]["memory"] = round(vals["memory"] / 1024 / 1024 / 1024)
+            self.ds["vm"][uid]["memory"] = round(vals["memory"] / 1024)
             self.ds["vm"][uid]["running"] = vals["status"] == "RUNNING"
 
     # ---------------------------

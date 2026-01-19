@@ -6,6 +6,7 @@
                 "data": {
                     "name": "Название интеграции",
                     "host": "Хост",
+                    "username": "Имя пользователя",
                     "api_key": "Ключ API",
                     "verify_ssl": "Проверка SSL-сертификата"
                 }
@@ -14,6 +15,7 @@
                 "description": "Reconfigure TrueNAS integration.",
                 "data": {
                     "host": "Host",
+                    "username": "Username",
                     "api_key": "API key",
                     "verify_ssl": "Verify SSL certificate"
                 }

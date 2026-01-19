@@ -22,11 +22,13 @@ class TrueNASAPI(object):
     def __init__(
         self,
         host: str,
+        username: str,
         api_key: str,
         verify_ssl: bool = True,
     ) -> None:
         """Initialize the TrueNAS API."""
         self._host = host
+        self._username = username
         self._api_key = api_key
         self._ssl_verify = verify_ssl
         self._url = f"wss://{self._host}/api/current"
@@ -97,15 +99,27 @@ class TrueNASAPI(object):
 
             try:
                 payload = {
-                    "method": "auth.login_with_api_key",
+                    "method": "auth.login_ex",
                     "jsonrpc": "2.0",
                     "id": 0,
-                    "params": [self._api_key],
+                    "params": [
+                        {
+                            "mechanism": "API_KEY_PLAIN",
+                            "username": self._username,
+                            "api_key": self._api_key,
+                            "login_options": {"user_info": False},
+                        }
+                    ],
                 }
                 self._ws.send(json.dumps(payload))
                 message = self._ws.recv()
                 data = json.loads(message)
-                self._connected = data["result"]
+                result = data.get("result")
+                if isinstance(result, dict):
+                    self._connected = result.get("response_type") == "SUCCESS"
+                else:
+                    self._connected = bool(result)
+
                 if not self._connected:
                     self._error = "invalid_key"
 
