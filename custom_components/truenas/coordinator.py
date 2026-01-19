@@ -58,6 +58,7 @@ class TrueNASCoordinator(DataUpdateCoordinator[None]):
             "replication": {},
             "snapshottask": {},
             "app": {},
+            "cronjob": {},
         }
 
         self.api = TrueNASAPI(
@@ -103,6 +104,7 @@ class TrueNASCoordinator(DataUpdateCoordinator[None]):
             self.get_replication,
             self.get_snapshottask,
             self.get_app,
+            self.get_cronjob,
         ]
 
         for job in jobs:
@@ -1013,3 +1015,39 @@ class TrueNASCoordinator(DataUpdateCoordinator[None]):
 
         for uid, vals in self.ds["app"].items():
             self.ds["app"][uid]["running"] = vals["state"] == "RUNNING"
+
+    # ---------------------------
+    #   get_cronjob
+    # ---------------------------
+    def get_cronjob(self) -> None:
+        """Get cronjobs from TrueNAS."""
+        self.ds["cronjob"] = parse_api(
+            data=self.ds["cronjob"],
+            source=self.api.query("cronjob.query"),
+            key="id",
+            vals=[
+                {"name": "id", "default": 0},
+                {"name": "enabled", "type": "bool", "default": False},
+                {"name": "command", "default": "unknown"},
+                {"name": "description", "default": ""},
+                {"name": "user", "default": "unknown"},
+                {"name": "schedule", "default": {}},
+                {"name": "stdout", "type": "bool", "default": False},
+                {"name": "stderr", "type": "bool", "default": False},
+            ],
+            ensure_vals=[
+                {"name": "display_name", "default": ""},
+            ],
+        )
+
+        for uid, vals in self.ds["cronjob"].items():
+            description = (vals.get("description") or "").strip()
+            command = (vals.get("command") or "").strip()
+            if description:
+                display_name = description
+            elif command:
+                display_name = command
+            else:
+                display_name = f"Cronjob {uid}"
+
+            self.ds["cronjob"][uid]["display_name"] = display_name

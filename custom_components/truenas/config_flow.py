@@ -23,6 +23,8 @@ from homeassistant.const import (
 from homeassistant.core import callback
 
 from .const import (
+    CONF_CRONJOB_SKIP_DISABLED,
+    DEFAULT_CRONJOB_SKIP_DISABLED,
     DEFAULT_DEVICE_NAME,
     DEFAULT_HOST,
     DEFAULT_SSL_VERIFY,
@@ -52,6 +54,14 @@ def _base_schema(truenas_config: Mapping[str, Any]) -> vol.Schema:
             CONF_VERIFY_SSL,
             default=truenas_config.get(CONF_VERIFY_SSL) or DEFAULT_SSL_VERIFY,
         ): bool,
+        vol.Required(
+            CONF_CRONJOB_SKIP_DISABLED,
+            default=(
+                truenas_config.get(CONF_CRONJOB_SKIP_DISABLED)
+                if CONF_CRONJOB_SKIP_DISABLED in truenas_config
+                else DEFAULT_CRONJOB_SKIP_DISABLED
+            ),
+        ): bool,
     }
 
     return vol.Schema(base_schema)
@@ -71,6 +81,14 @@ def _reconfigure_schema(truenas_config: Mapping[str, Any]) -> vol.Schema:
         vol.Required(
             CONF_VERIFY_SSL,
             default=truenas_config.get(CONF_VERIFY_SSL) or DEFAULT_SSL_VERIFY,
+        ): bool,
+        vol.Required(
+            CONF_CRONJOB_SKIP_DISABLED,
+            default=(
+                truenas_config.get(CONF_CRONJOB_SKIP_DISABLED)
+                if CONF_CRONJOB_SKIP_DISABLED in truenas_config
+                else DEFAULT_CRONJOB_SKIP_DISABLED
+            ),
         ): bool,
     }
 
